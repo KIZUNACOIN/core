@@ -48,6 +48,7 @@ var arrWatchedAddresses = []; // does not include my addresses, therefore always
 var last_hearbeat_wake_ts = Date.now();
 var peer_events_buffer = [];
 var assocKnownPeers = {};
+var assocBlockedPeers = {};
 var exchangeRates = {};
 
 if (process.browser){ // browser
@@ -527,11 +528,10 @@ function findOutboundPeerOrConnect(url, onOpen){
 }
 
 function purgePeerEvents(){
-    if (conf.storage !== 'sqlite') {
+    if (conf.storage !== 'sqlite')
         return;
-    }
     console.log('will purge peer events');
-    db.query("DELETE FROM peer_events WHERE event_date <= datetime('now', '-3 day')", function() {
+    db.query("DELETE FROM peer_events WHERE event_date <= datetime('now', '-0.5 day')", function() {
         console.log("deleted some old peer_events");
     });
 }
@@ -1261,13 +1261,13 @@ function notifyWatchersAboutStableJoints(mci){
 // from_mci is non-inclusive, to_mci is inclusive
 function notifyLightClientsAboutStableJoints(from_mci, to_mci){
 	db.query(
-		"SELECT peer FROM units JOIN unit_authors USING(unit) JOIN watched_light_addresses USING(address) \n\
+		"SELECT peer FROM units CROSS JOIN unit_authors USING(unit) CROSS JOIN watched_light_addresses USING(address) \n\
 		WHERE main_chain_index>? AND main_chain_index<=? \n\
 		UNION \n\
-		SELECT peer FROM units JOIN outputs USING(unit) JOIN watched_light_addresses USING(address) \n\
+		SELECT peer FROM units CROSS JOIN outputs USING(unit) CROSS JOIN watched_light_addresses USING(address) \n\
 		WHERE main_chain_index>? AND main_chain_index<=? \n\
 		UNION \n\
-		SELECT peer FROM units JOIN watched_light_units USING(unit) \n\
+		SELECT peer FROM units CROSS JOIN watched_light_units USING(unit) \n\
 		WHERE main_chain_index>? AND main_chain_index<=?",
 		[from_mci, to_mci, from_mci, to_mci, from_mci, to_mci],
 		function(rows){
@@ -1295,20 +1295,20 @@ function notifyLocalWatchedAddressesAboutStableJoints(mci){
 	}
 	if (arrWatchedAddresses.length > 0)
 		db.query(
-			"SELECT unit FROM units JOIN unit_authors USING(unit) WHERE main_chain_index=? AND address IN(?) AND sequence='good' \n\
+			"SELECT unit FROM units CROSS JOIN unit_authors USING(unit) WHERE main_chain_index=? AND address IN(?) AND sequence='good' \n\
 			UNION \n\
-			SELECT unit FROM units JOIN outputs USING(unit) WHERE main_chain_index=? AND address IN(?) AND sequence='good'",
+			SELECT unit FROM units CROSS JOIN outputs USING(unit) WHERE main_chain_index=? AND address IN(?) AND sequence='good'",
 			[mci, arrWatchedAddresses, mci, arrWatchedAddresses],
 			handleRows
 		);
 	db.query(
-		"SELECT unit FROM units JOIN unit_authors USING(unit) JOIN my_addresses USING(address) WHERE main_chain_index=? AND sequence='good' \n\
+		"SELECT unit FROM units CROSS JOIN unit_authors USING(unit) CROSS JOIN my_addresses USING(address) WHERE main_chain_index=? AND sequence='good' \n\
 		UNION \n\
-		SELECT unit FROM units JOIN outputs USING(unit) JOIN my_addresses USING(address) WHERE main_chain_index=? AND sequence='good' \n\
+		SELECT unit FROM units CROSS JOIN outputs USING(unit) CROSS JOIN my_addresses USING(address) WHERE main_chain_index=? AND sequence='good' \n\
 		UNION \n\
-		SELECT unit FROM units JOIN unit_authors USING(unit) JOIN shared_addresses ON address=shared_address WHERE main_chain_index=? AND sequence='good' \n\
+		SELECT unit FROM units CROSS JOIN unit_authors USING(unit) CROSS JOIN shared_addresses ON address=shared_address WHERE main_chain_index=? AND sequence='good' \n\
 		UNION \n\
-		SELECT unit FROM units JOIN outputs USING(unit) JOIN shared_addresses ON address=shared_address WHERE main_chain_index=? AND sequence='good'",
+		SELECT unit FROM units CROSS JOIN outputs USING(unit) CROSS JOIN shared_addresses ON address=shared_address WHERE main_chain_index=? AND sequence='good'",
 		[mci, mci, mci, mci],
 		handleRows
 	);
@@ -1363,11 +1363,41 @@ function writeEvent(event, host){
 		var column = "count_"+event+"_joints";
 		db.query("UPDATE peer_hosts SET "+column+"="+column+"+1 WHERE peer_host=?", [host]);
 		db.query("INSERT INTO peer_events (peer_host, event) VALUES (?,?)", [host, event]);
+		if (event === 'invalid')
+			assocBlockedPeers[host] = Date.now();
 		return;
 	}
 	var event_date = Math.floor(Date.now() / 1000);
 	peer_events_buffer.push({host: host, event: event, event_date: event_date});
 	flushEvents();
+}
+
+function determineIfPeerIsBlocked(host, handleResult){
+	/*	"SELECT \n\
+			SUM(CASE WHEN event='invalid' THEN 1 ELSE 0 END) AS count_invalid, \n\
+			SUM(CASE WHEN event='new_good' THEN 1 ELSE 0 END) AS count_new_good \n\
+			FROM peer_events WHERE peer_host=? AND event_date>"+db.addTime("-1 HOUR"),*/
+	/*	"SELECT 1 FROM peer_events WHERE peer_host=? AND event_date>"+db.addTime("-1 HOUR")+" AND event='invalid' LIMIT 1",*/
+	handleResult(!!assocBlockedPeers[host]);
+}
+
+function unblockPeers(){
+	for (var host in assocBlockedPeers)
+		if (assocBlockedPeers[host] < Date.now() - 3600*1000)
+			delete assocBlockedPeers[host];
+}
+
+function initBlockedPeers(){
+	db.query(
+		"SELECT peer_host, MAX("+db.getUnixTimestamp('event_date')+") AS ts FROM peer_events \n\
+		WHERE event_date>"+db.addTime("-1 HOUR")+" AND event='invalid' \n\
+		GROUP BY peer_host",
+		function(rows){
+			rows.forEach(function(row){
+				assocBlockedPeers[row.peer_host] = row.ts*1000;
+			});
+		}
+	);
 }
 
 if (!conf.bLight)
@@ -1924,7 +1954,7 @@ function sendStoredDeviceMessages(ws, device_address){
 
 function version2int(version){
 	var arr = version.split('.');
-	return arr[0]*10000 + arr[1]*100 + arr[2]*1;
+	return arr[0]*1000000 + arr[1]*1000 + arr[2]*1;
 }
 
 
@@ -2123,7 +2153,7 @@ function handleJustsaying(ws, subject, body){
 			};
 			db.query("SELECT 1 FROM devices WHERE device_address=?", [ws.device_address], function(rows){
 				if (rows.length === 0)
-					db.query("INSERT INTO devices (device_address, pubkey) VALUES (?,?)", [ws.device_address, objLogin.pubkey], function(){
+					db.query("INSERT "+db.getIgnore()+" INTO devices (device_address, pubkey) VALUES (?,?)", [ws.device_address, objLogin.pubkey], function(){
 						sendInfo(ws, "address created");
 						finishLogin();
 					});
@@ -2230,6 +2260,7 @@ function handleJustsaying(ws, subject, body){
 		case 'upgrade_required':
 			if (!ws.bLoggingIn && !ws.bLoggedIn) // accept from hub only
 				return;
+			ws.close(1000, "my core is old");
 			throw Error("Mandatory upgrade required, please check the release notes at https://github.com/byteball/byteball/releases and upgrade.");
 			break;
 	}
@@ -2547,6 +2578,7 @@ function handleRequest(ws, tag, command, params){
 			break;
 
 	   case 'light/get_attestation':
+			// find an attestation posted by the given attestor and attesting field=value
 			if (conf.bLight)
 				return sendErrorResponse(ws, tag, "I'm light myself, can't serve you");
 			if (ws.bOutbound)
@@ -2563,6 +2595,35 @@ function handleRequest(ws, tag, command, params){
 				function(rows){
 					var attestation_unit = (rows.length > 0) ? rows[0].unit : "";
 					sendResponse(ws, tag, attestation_unit);
+				}
+			);
+			break;
+
+	   case 'light/get_attestations':
+			// get list of all attestations of an address
+			if (conf.bLight)
+				return sendErrorResponse(ws, tag, "I'm light myself, can't serve you");
+			if (ws.bOutbound)
+				return sendErrorResponse(ws, tag, "light clients have to be inbound");
+			if (!params)
+				return sendErrorResponse(ws, tag, "no params in light/get_attestations");
+			if (!ValidationUtils.isValidAddress(params.address))
+				return sendErrorResponse(ws, tag, "missing address in light/get_attestations");
+			var order = (conf.storage === 'sqlite') ? 'attestations.rowid' : 'creation_date';
+			var join = (conf.storage === 'sqlite') ? '' : 'JOIN units USING(unit)';
+			db.query(
+				"SELECT unit, attestor_address, payload \n\
+				FROM attestations CROSS JOIN messages USING(unit, message_index) "+join+" \n\
+				WHERE address=? ORDER BY "+order, 
+				[params.address],
+				function(rows){
+					var arrAttestations = rows.map(function(row){
+						var payload = JSON.parse(row.payload);
+						if (payload.address !== params.address)
+							throw Error("not matching addresses, expected "+params.address+", got "+payload.address);
+						return {unit: row.unit, attestor_address: row.attestor_address, profile: payload.profile};
+					});
+					sendResponse(ws, tag, arrAttestations);
 				}
 			);
 			break;
@@ -2599,7 +2660,7 @@ function handleRequest(ws, tag, command, params){
 				if (err)
 					return sendErrorResponse(ws, tag, err);
 				var bMultiAuthored = (params.addresses.length > 1);
-				inputs.pickDivisibleCoinsForAmount(db, objAsset, params.addresses, params.last_ball_mci, params.amount, bMultiAuthored, function(arrInputsWithProofs, total_amount) {
+				inputs.pickDivisibleCoinsForAmount(db, objAsset, params.addresses, params.last_ball_mci, params.amount, bMultiAuthored, 'own', function(arrInputsWithProofs, total_amount) {
 					var objResponse = {inputs_with_proofs: arrInputsWithProofs || [], total_amount: total_amount || 0};
 					sendResponse(ws, tag, objResponse);
 				});
@@ -2678,6 +2739,8 @@ function startAcceptingConnections(){
 	db.query("DELETE FROM watched_light_addresses");
 	db.query("DELETE FROM watched_light_units");
 	//db.query("DELETE FROM light_peer_witnesses");
+	setInterval(unblockPeers, 10*60*1000);
+	initBlockedPeers();
 	// listen for new connections
 	wss = new WebSocketServer({ port: conf.port });
 	wss.on('connection', function(ws) {
@@ -2702,35 +2765,28 @@ function startAcceptingConnections(){
 			return;
 		}
 		var bStatsCheckUnderWay = true;
-		db.query(
-			"SELECT \n\
-				SUM(CASE WHEN event='invalid' THEN 1 ELSE 0 END) AS count_invalid, \n\
-				SUM(CASE WHEN event='new_good' THEN 1 ELSE 0 END) AS count_new_good \n\
-				FROM peer_events WHERE peer_host=? AND event_date>"+db.addTime("-1 HOUR"), [ws.host],
-			function(rows){
-				bStatsCheckUnderWay = false;
-				var stats = rows[0];
-				if (stats.count_invalid){
-					console.log("rejecting new client "+ws.host+" because of bad stats");
-					return ws.terminate();
-				}
-			
-				// welcome the new peer with the list of free joints
-				//if (!bCatchingUp)
-				//    sendFreeJoints(ws);
-
-				sendVersion(ws);
-
-				// I'm a hub, send challenge
-				if (conf.bServeAsHub){
-					ws.challenge = crypto.randomBytes(30).toString("base64");
-					sendJustsaying(ws, 'hub/challenge', ws.challenge);
-				}
-				if (!conf.bLight)
-					subscribe(ws);
-				eventBus.emit('connected', ws);
+		determineIfPeerIsBlocked(ws.host, function(bBlocked){
+			bStatsCheckUnderWay = false;
+			if (bBlocked){
+				console.log("rejecting new client "+ws.host+" because of bad stats");
+				return ws.terminate();
 			}
-		);
+
+			// welcome the new peer with the list of free joints
+			//if (!bCatchingUp)
+			//    sendFreeJoints(ws);
+
+			sendVersion(ws);
+
+			// I'm a hub, send challenge
+			if (conf.bServeAsHub){
+				ws.challenge = crypto.randomBytes(30).toString("base64");
+				sendJustsaying(ws, 'hub/challenge', ws.challenge);
+			}
+			if (!conf.bLight)
+				subscribe(ws);
+			eventBus.emit('connected', ws);
+		});
 		ws.on('message', function(message){ // might come earlier than stats check completes
 			function tryHandleMessage(){
 				if (bStatsCheckUnderWay)
@@ -2762,6 +2818,7 @@ function startRelay(){
 	else
 		startAcceptingConnections();
 	
+	storage.initCaches();
 	checkCatchupLeftovers();
 
 	if (conf.bWantNewPeers){
@@ -2772,7 +2829,7 @@ function startRelay(){
 		setTimeout(checkIfHaveEnoughOutboundPeersAndAdd, 30*1000);
 		setInterval(purgeDeadPeers, 30*60*1000);
 	}
-	// purge peer_events every 6 hours, removing those older than 3 days ago.
+	// purge peer_events every 6 hours, removing those older than 0.5 days ago.
 	setInterval(purgePeerEvents, 6*60*60*1000);
 	
 	// request needed joints that were not received during the previous session

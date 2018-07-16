@@ -122,13 +122,15 @@ function buildPaidWitnessesForMainChainIndex(conn, main_chain_index, cb){
 			profiler.start();
 			// we read witnesses from MC unit (users can cheat with side-chains to flip the witness list and pay commissions to their own witnesses)
 			readMcUnitWitnesses(conn, main_chain_index, function(arrWitnesses){
-				conn.query("CREATE TEMPORARY TABLE paid_witness_events_tmp ( \n\
+				conn.query(
+					"CREATE TEMPORARY TABLE paid_witness_events_tmp ( \n\
 					unit CHAR(44) NOT NULL, \n\
-					address CHAR(32) NOT NULL)", function(){
+					address CHAR(32) NOT NULL)",
+					function(){
 						conn.query("SELECT unit, main_chain_index FROM units WHERE main_chain_index=?", [main_chain_index], function(rows){
 							profiler.stop('mc-wc-select-units');
 							et=0; rt=0;
-							var unitsRAM = _.map(_.pickBy(storage.assocStableUnits, function(v, k){return v.main_chain_index == main_chain_index}), function(props, unit){return {unit: props.unit, main_chain_index: main_chain_index}});
+							var unitsRAM = storage.assocStableUnitsByMci[main_chain_index].map(function(props){return {unit: props.unit, main_chain_index: main_chain_index}});
 							if (!_.isEqual(rows, unitsRAM)) {
 								if (!_.isEqual(_.sortBy(rows, function(v){return v.unit;}), _.sortBy(unitsRAM, function(v){return v.unit;})))
 									throwError("different units in buildPaidWitnessesForMainChainIndex, db: "+JSON.stringify(rows)+", ram: "+JSON.stringify(unitsRAM));
@@ -162,20 +164,20 @@ function buildPaidWitnessesForMainChainIndex(conn, main_chain_index, cb){
 										function(){
 											//console.log(Date.now()-t);
 											conn.query("SELECT address, amount FROM witnessing_outputs WHERE main_chain_index=?", [main_chain_index], function(rows){
-													var countPaidWitnesses = _.countBy(paidWitnessEvents, function(v){return v.unit});
-													var paidAmounts = _.reduce(paidWitnessEvents, function(amountsByAddress, v) {
-														var objUnit = storage.assocStableUnits[v.unit];
-														if (typeof amountsByAddress[v.address] === "undefined")
-															amountsByAddress[v.address] = 0;
-														if (objUnit.sequence == 'good')
-															amountsByAddress[v.address] += Math.round(objUnit.payload_commission / countPaidWitnesses[v.unit]);
-														return amountsByAddress;
-													}, {});
-													var paidAmounts2 = _.map(paidAmounts, function(amount, address) {return {address: address, amount: amount}});
-													if (!_.isEqual(rows, paidAmounts2)){
-														if (!_.isEqual(_.sortBy(rows, function(v){return v.address}), _.sortBy(paidAmounts2, function(v){return v.address})))
-															throwError("different amount in buildPaidWitnessesForMainChainIndex db:" + JSON.stringify(rows) + " ram:" + JSON.stringify(paidAmounts2));
-													}
+												var countPaidWitnesses = _.countBy(paidWitnessEvents, function(v){return v.unit});
+												var assocPaidAmountsByAddress = _.reduce(paidWitnessEvents, function(amountsByAddress, v) {
+													var objUnit = storage.assocStableUnits[v.unit];
+													if (typeof amountsByAddress[v.address] === "undefined")
+														amountsByAddress[v.address] = 0;
+													if (objUnit.sequence == 'good')
+														amountsByAddress[v.address] += Math.round(objUnit.payload_commission / countPaidWitnesses[v.unit]);
+													return amountsByAddress;
+												}, {});
+												var arrPaidAmounts2 = _.map(assocPaidAmountsByAddress, function(amount, address) {return {address: address, amount: amount}});
+												if (!_.isEqual(rows, arrPaidAmounts2)){
+													if (!_.isEqual(_.sortBy(rows, function(v){return v.address}), _.sortBy(arrPaidAmounts2, function(v){return v.address})))
+														throwError("different amount in buildPaidWitnessesForMainChainIndex db:" + JSON.stringify(rows) + " ram:" + JSON.stringify(arrPaidAmounts2));
+												}
 											});
 											conn.query(conn.dropTemporaryTable("paid_witness_events_tmp"), function(){
 												profiler.stop('mc-wc-aggregate-events');
@@ -199,7 +201,7 @@ function readMcUnitWitnesses(conn, main_chain_index, handleWitnesses){
 		if (rows.length !== 1)
 			throw Error("not 1 row on MC "+main_chain_index);
 		var witness_list_unit = rows[0].witness_list_unit ? rows[0].witness_list_unit : rows[0].unit;
-		var witness_list_unitRAM = _.find(storage.assocStableUnits, function(v, k){return v.main_chain_index == main_chain_index && v.is_on_main_chain}).witness_list_unit;
+		var witness_list_unitRAM = storage.assocStableUnitsByMci[main_chain_index].find(function(props){return props.is_on_main_chain}).witness_list_unit;
 		if (!_.isEqual(witness_list_unit, witness_list_unitRAM))
 			throw Error("witness_list_units are not equal db:"+witness_list_unit+", RAM:"+witness_list_unitRAM);
 		storage.readWitnessList(conn, witness_list_unit, handleWitnesses);
@@ -238,9 +240,15 @@ function buildPaidWitnesses(conn, objUnitProps, arrWitnesses, onDone){
 			function(rows){
 				et += Date.now()-t;
 				var count_paid_witnesses = rows.length;
-				var arrPaidWitnessesRAM = _.uniq(_.flatMap(_.pickBy(storage.assocStableUnits, function(v, k){return _.includes(arrUnits,k) && v.sequence == 'good'}), function(v, k){
+				/*var arrPaidWitnessesRAM = _.uniq(_.flatMap(_.pickBy(storage.assocStableUnits, function(v, k){return _.includes(arrUnits,k) && v.sequence == 'good'}), function(v, k){
 					return _.intersection(v.author_addresses, arrWitnesses);
-				}));
+				}));*/
+				var arrPaidWitnessesRAM = _.uniq(_.flatten(arrUnits.map(function(_unit){
+					var unitProps = storage.assocStableUnits[_unit];
+					if (!unitProps)
+						throw Error("stable unit "+_unit+" not found in cache");
+					return (unitProps.sequence !== 'good') ? [] : _.intersection(unitProps.author_addresses, arrWitnesses);
+				}) ) );
 				if (!_.isEqual(arrPaidWitnessesRAM.sort(), _.map(rows, function(v){return v.address}).sort()))
 					throw Error("arrPaidWitnesses are not equal");
 				var arrValues;
@@ -270,8 +278,12 @@ function getMaxSpendableMciForLastBallMci(last_ball_mci){
 }
 
 function throwError(msg){
+	var eventBus = require('./event_bus.js');
 	debugger;
-	throw Error(msg);
+	if (typeof window === 'undefined')
+		throw Error(msg);
+	else
+		eventBus.emit('nonfatal_error', msg, new Error());
 }
 
 exports.updatePaidWitnesses = updatePaidWitnesses;

@@ -511,12 +511,17 @@ function saveJoint(objJoint, objValidationState, preCommitCallback, onDone) {
 					async.series(arrOps, function(err){
 						profiler.start();
 						conn.query(err ? "ROLLBACK" : "COMMIT", function(){
-							conn.release();
 							console.log((err ? (err+", therefore rolled back unit ") : "committed unit ")+objUnit.unit);
 							profiler.stop('write-commit');
 							profiler.increment();
-							if (err)
-								storage.resetUnstableUnits(unlock);
+							if (err) {
+								var headers_commission = require("./headers_commission.js");
+								headers_commission.resetMaxSpendableMci();
+								storage.resetMemory(conn, function(){
+									unlock();
+									conn.release();
+								});
+							}
 							else{
 								objValidationState.arrAdditionalQueries.forEach(function(objQuery){
 									if (objQuery.sql.match(/temp-bad/)){
@@ -531,6 +536,7 @@ function saveJoint(objJoint, objValidationState, preCommitCallback, onDone) {
 									}
 								});
 								unlock();
+								conn.release();
 							}
 							if (!err)
 								eventBus.emit('saved_unit-'+objUnit.unit, objJoint);

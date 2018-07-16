@@ -23,6 +23,7 @@ var assocCachedAssetInfos = {};
 
 var assocUnstableUnits = {};
 var assocStableUnits = {};
+var assocStableUnitsByMci = {};
 
 var min_retrievable_mci = null;
 initializeMinRetrievableMci();
@@ -714,7 +715,9 @@ function readUnitProps(conn, unit, handleProps){
 			var props = rows[0];
 			props.author_addresses = props.author_addresses.split(',');
 			if (props.is_stable) {
-				assocStableUnits[unit] = props;
+				if (props.sequence === 'good') // we don't cache final-bads as they can be voided later
+					assocStableUnits[unit] = props;
+				// we don't add it to assocStableUnitsByMci as all we need there is already there
 			}
 			else{
 				if (!assocUnstableUnits[unit])
@@ -832,6 +835,7 @@ function updateMinRetrievableMciAfterStabilizingMci(conn, last_stable_mci, handl
 					unit_rows,
 					function(unit_row, cb){
 						var unit = unit_row.unit;
+						console.log('voiding unit '+unit);
 						if (!unit_row.content_hash)
 							throw Error("no content hash in bad unit "+unit);
 						readJoint(conn, unit, {
@@ -848,7 +852,8 @@ function updateMinRetrievableMciAfterStabilizingMci(conn, last_stable_mci, handl
 							return handleMinRetrievableMci(min_retrievable_mci);
 						async.series(arrQueries, function(){
 							unit_rows.forEach(function(unit_row){
-								forgetUnit(unit_row.unit);
+								// don't forget, can be still used when calculating witnessing commissions
+							//	forgetUnit(unit_row.unit);
 							});
 							handleMinRetrievableMci(min_retrievable_mci);
 						});
@@ -859,8 +864,9 @@ function updateMinRetrievableMciAfterStabilizingMci(conn, last_stable_mci, handl
 	});
 }
 
-function initializeMinRetrievableMci(){
-	db.query(
+function initializeMinRetrievableMci(conn, onDone){
+	var conn = conn || db;
+	conn.query(
 		"SELECT MAX(lb_units.main_chain_index) AS min_retrievable_mci \n\
 		FROM units JOIN units AS lb_units ON units.last_ball_unit=lb_units.unit \n\
 		WHERE units.is_on_main_chain=1 AND units.is_stable=1", 
@@ -870,6 +876,8 @@ function initializeMinRetrievableMci(){
 			min_retrievable_mci = rows[0].min_retrievable_mci;
 			if (min_retrievable_mci === null)
 				min_retrievable_mci = 0;
+			if (onDone)
+				onDone();
 		}
 	);
 }
@@ -1201,11 +1209,14 @@ function setUnitIsKnown(unit){
 }
 
 function forgetUnit(unit){
+	console.log('forgetting unit '+unit);
 	delete assocKnownUnits[unit];
 	delete assocCachedUnits[unit];
 	delete assocCachedUnitAuthors[unit];
 	delete assocCachedUnitWitnesses[unit];
 	delete assocUnstableUnits[unit];
+	if (!conf.bLight && assocStableUnits[unit])
+		throw Error("trying to forget stable unit "+unit);
 	delete assocStableUnits[unit];
 }
 
@@ -1223,6 +1234,12 @@ function shrinkCache(){
 	var arrUnits = _.union(arrPropsUnits, arrAuthorsUnits, arrWitnessesUnits, arrKnownUnits, arrStableUnits);
 	console.log('will shrink cache, total units: '+arrUnits.length);
 	readLastStableMcIndex(db, function(last_stable_mci){
+		for (var mci = last_stable_mci-constants.COUNT_MC_BALLS_FOR_PAID_WITNESSING-10-1; true; mci--){
+			if (assocStableUnitsByMci[mci])
+				delete assocStableUnitsByMci[mci];
+			else
+				break;
+		}
 		var CHUNK_SIZE = 500; // there is a limit on the number of query params
 		for (var offset=0; offset<arrUnits.length; offset+=CHUNK_SIZE){
 			// filter units that became stable more than 100 MC indexes ago
@@ -1247,8 +1264,9 @@ setInterval(shrinkCache, 300*1000);
 
 
 
-function initUnstableUnits(onDone){
-	db.query(
+function initUnstableUnits(conn, onDone){
+	var conn = conn || db;
+	conn.query(
 		"SELECT unit, level, latest_included_mc_index, main_chain_index, is_on_main_chain, is_free, is_stable, witnessed_level, headers_commission, payload_commission, sequence, GROUP_CONCAT(address) AS author_addresses, COALESCE(witness_list_unit, unit) AS witness_list_unit \n\
 			FROM units \n\
 			JOIN unit_authors USING(unit) \n\
@@ -1264,14 +1282,15 @@ function initUnstableUnits(onDone){
 			console.log('initUnstableUnits 1 done');
 			if (Object.keys(assocUnstableUnits).length === 0)
 				return onDone ? onDone() : null;
-			initParenthoodAndHeadersComissionShareForUnits(assocUnstableUnits, onDone);
+			initParenthoodAndHeadersComissionShareForUnits(conn, assocUnstableUnits, onDone);
 		}
 	);
 }
 
-function initStableUnits(onDone){
-	readLastStableMcIndex(db, function(last_stable_mci){
-		db.query(
+function initStableUnits(conn, onDone){
+	var conn = conn || db;
+	readLastStableMcIndex(conn, function(last_stable_mci){
+		conn.query(
 			"SELECT unit, level, latest_included_mc_index, main_chain_index, is_on_main_chain, is_free, is_stable, witnessed_level, headers_commission, payload_commission, sequence, GROUP_CONCAT(address) AS author_addresses, COALESCE(witness_list_unit, unit) AS witness_list_unit \n\
 			FROM units \n\
 			JOIN unit_authors USING(unit) \n\
@@ -1282,20 +1301,23 @@ function initStableUnits(onDone){
 				rows.forEach(function(row){
 					row.author_addresses = row.author_addresses.split(',');
 					assocStableUnits[row.unit] = row;
+					if (!assocStableUnitsByMci[row.main_chain_index])
+						assocStableUnitsByMci[row.main_chain_index] = [];
+					assocStableUnitsByMci[row.main_chain_index].push(row);
 				});
 				console.log('initStableUnits 1 done');
 				if (Object.keys(assocStableUnits).length === 0)
 					return onDone ? onDone() : null;
-				initParenthoodAndHeadersComissionShareForUnits(assocStableUnits, onDone);
+				initParenthoodAndHeadersComissionShareForUnits(conn, assocStableUnits, onDone);
 			}
 		);
 	});
 }
 
-function initParenthoodAndHeadersComissionShareForUnits(assocUnits, onDone) {
+function initParenthoodAndHeadersComissionShareForUnits(conn, assocUnits, onDone) {
 	async.series([
 		function(cb){ // parenthood
-			db.query(
+			conn.query(
 				"SELECT parent_unit, child_unit FROM parenthoods WHERE child_unit IN("+Object.keys(assocUnits).map(db.escape).join(', ')+")", 
 				function(prows){
 					prows.forEach(function(prow){
@@ -1308,7 +1330,7 @@ function initParenthoodAndHeadersComissionShareForUnits(assocUnits, onDone) {
 			);
 		},
 		function(cb){ // headers_commision_share
-			db.query(
+			conn.query(
 				"SELECT unit, address, earned_headers_commission_share FROM earned_headers_commission_recipients WHERE unit IN("+Object.keys(assocUnits).map(db.escape).join(', ')+")",
 				function(prows){
 					prows.forEach(function(prow){
@@ -1327,15 +1349,44 @@ function initParenthoodAndHeadersComissionShareForUnits(assocUnits, onDone) {
 	);
 }
 
-function resetUnstableUnits(onDone){
+function resetUnstableUnits(conn, onDone){
 	Object.keys(assocUnstableUnits).forEach(function(unit){
 		delete assocUnstableUnits[unit];
 	});
-	initUnstableUnits(onDone);
+	initUnstableUnits(conn, onDone);
 }
 
-mutex.lock(['write'], initUnstableUnits);
-mutex.lock(['write'], initStableUnits);
+function resetStableUnits(conn, onDone){
+	Object.keys(assocStableUnits).forEach(function(unit){
+		delete assocStableUnits[unit];
+	});
+	Object.keys(assocStableUnitsByMci).forEach(function(mci){
+		delete assocStableUnitsByMci[mci];
+	});
+	initStableUnits(conn, onDone);
+}
+
+function resetMemory(conn, onDone){
+	resetUnstableUnits(conn, function(){
+		resetStableUnits(conn, function(){
+			min_retrievable_mci = null;
+			initializeMinRetrievableMci(conn, onDone);
+		});
+	});
+}
+
+function initCaches(){
+	console.log('initCaches');
+	db.executeInTransaction(function(conn, onDone){
+		mutex.lock(['write'], function(unlock) {
+			initUnstableUnits(conn, initStableUnits.bind(this, conn, function(){
+				console.log('initCaches done');
+				unlock();
+				onDone();
+			}));
+		});
+	});
+}
 
 if (!conf.bLight)
 	archiveJointAndDescendantsIfExists('N6QadI9yg3zLxPMphfNGJcPfddW4yHPkoGMbbGZsWa0=');
@@ -1393,4 +1444,6 @@ exports.sliceAndExecuteQuery = sliceAndExecuteQuery;
 
 exports.assocUnstableUnits = assocUnstableUnits;
 exports.assocStableUnits = assocStableUnits;
-exports.resetUnstableUnits = resetUnstableUnits;
+exports.assocStableUnitsByMci = assocStableUnitsByMci;
+exports.initCaches = initCaches;
+exports.resetMemory = resetMemory;

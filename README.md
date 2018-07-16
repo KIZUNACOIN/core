@@ -35,7 +35,7 @@ Storage backend -- mysql or sqlite, the default is sqlite.  If sqlite, the datab
 
 ```json
 {
-	"port": 6622,
+	"port": 6611,
 	"storage": "mysql",
 	"database": {
 		"max_connections": 30,
@@ -84,7 +84,7 @@ server {
          return 301 https://$server_name$request_uri;
     }
 	location = /bb {
-		proxy_pass http://localhost:6622;
+		proxy_pass http://localhost:6611;
 		proxy_http_version 1.1;
 		proxy_set_header X-Real-IP $remote_addr;
 		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

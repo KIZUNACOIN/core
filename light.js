@@ -15,7 +15,7 @@ var parentComposer = require('./parent_composer.js');
 var breadcrumbs = require('./breadcrumbs.js');
 var eventBus = require('./event_bus.js');
 
-var MAX_HISTORY_ITEMS = 1000;
+var MAX_HISTORY_ITEMS = 2000;
 
 // unit's MC index is earlier_mci
 function buildProofChain(later_mci, earlier_mci, unit, arrBalls, onDone){
@@ -631,6 +631,8 @@ function buildPath(objLaterJoint, objEarlierJoint, arrChain, onDone){
 			function(rows){
 				if (rows.length !== 1)
 					throw Error("goUp not 1 parent");
+				if (rows[0].unit === objEarlierJoint.unit.unit)
+					return onDone();
 				if (rows[0].main_chain_index < objEarlierJoint.unit.main_chain_index) // jumped over the target
 					return buildPathToEarlierUnit(objChildJoint);
 				addJoint(rows[0].unit, function(objJoint){
@@ -647,7 +649,7 @@ function buildPath(objLaterJoint, objEarlierJoint, arrChain, onDone){
 			[objJoint.unit.unit, objJoint.unit.main_chain_index],
 			function(rows){
 				if (rows.length === 0)
-					throw Error("no parents with same mci?");
+					throw Error("no parents with same mci? unit="+objJoint.unit.unit+", mci="+objJoint.unit.main_chain_index+", earlier="+objEarlierJoint.unit.unit+", later="+objLaterJoint.unit.unit);
 				var arrParentUnits = rows.map(function(row){ return row.unit });
 				if (arrParentUnits.indexOf(objEarlierJoint.unit.unit) >= 0)
 					return onDone();
