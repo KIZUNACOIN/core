@@ -12,7 +12,7 @@ exports.alt = '1';
 
 exports.bTestnet = (exports.alt === '2' && exports.version === '1.0t');
 
-exports.GENESIS_UNIT = exports.bTestnet ? 'TvqutGPz3T4Cs6oiChxFlclY92M2MvCvfXR5/FETato=' : 'clgJwqnKY/hzhxIhQOYUFX6aGUqFbWrFzmqHlbypRms=';
+exports.GENESIS_UNIT = exports.bTestnet ? 'TvqutGPz3T4Cs6oiChxFlclY92M2MvCvfXR5/FETato=' : '+vTF8q+bVjgo4ojXzfj8hQtzLIb03W9LHPelVeEIFEU=';
 exports.BLACKBYTES_ASSET = exports.bTestnet ? 'LUQu5ik4WLfCrr8OwXezqBa+i3IlZLqxj2itQZQm8WY=' : 'qO2JsiuDMh/j+pqJYZw3u82O71WjCDf0vTNvsnntr8o=';
 
 exports.HASH_LENGTH = 44;
