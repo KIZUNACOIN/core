@@ -662,7 +662,6 @@ DROP TABLE IF EXISTS paid_witness_events;
 CREATE TABLE IF NOT EXISTS push_registrations (
     registrationId TEXT, 
     device_address TEXT NOT NULL,
-    platform TEXT NOT NULL,
     PRIMARY KEY (device_address)
 );
 
@@ -768,4 +767,4 @@ CREATE TABLE original_addresses (
 );
 
 
-PRAGMA user_version=21;
+PRAGMA user_version=20;

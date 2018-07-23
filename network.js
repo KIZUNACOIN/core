@@ -2164,7 +2164,10 @@ function handleJustsaying(ws, subject, body){
 					finishLogin();
 				}
 			});
-			sendJustsaying(ws, 'hub/push_project_number', {projectNumber: (conf.pushApiProjectNumber && conf.pushApiKey ? conf.pushApiProjectNumber : 0), hasKeyId: !!conf.keyId});
+			if (conf.pushApiProjectNumber && conf.pushApiKey)
+				sendJustsaying(ws, 'hub/push_project_number', {projectNumber: conf.pushApiProjectNumber});
+			else
+				sendJustsaying(ws, 'hub/push_project_number', {projectNumber: 0});
 			eventBus.emit('client_logged_in', ws);
 			break;
 			
