@@ -74,7 +74,9 @@ To lower disk load and increase sync speed, you can optionally disable flushing 
 
 Kizunacoin network works over secure WebSocket protocol wss://.  To accept incoming connections, you'll need a valid TLS certificate (you can get a free one from [letsencrypt.org](https://letsencrypt.org)) and a domain name (you can get a free domain from [Freenom](http://www.freenom.com/)).  Then you accept connections on standard port 443 and proxy them to your locally running kizunacoin daemon.
 
-This is an example configuration for nginx to accept websocket connections at wss://kizunacoin.one/bb and forward them to locally running daemon that listens on port 6611:
+This is an example configuration for nginx to accept websocket connections at wss://hub.kizunacoin.jp and forward them to locally running daemon that listens on port 6611:
+
+If your server doesn't support IPv6, comment or delete the two lines containing [::] or nginx won't start
 
 ```nginx
 server {
@@ -97,4 +99,15 @@ server {
 }
 ```
 
- 
+By default Node limits itself to 1.76GB the RAM it uses. If you accept incoming connections, you will likely reach this limit and get this error after some time:
+```
+FATAL ERROR: CALL_AND_RETRY_LAST Allocation failed - JavaScript heap out of memory
+1: node::Abort() [node]
+...
+...
+12: 0x3c0f805c7567
+Out of memory
+```
+To prevent this, increase the RAM limit by adding `--max_old_space_size=<size>` to the launch command where size is the amount in MB you want to allocate.
+
+For example `--max-old-space-size=4096`, if your server has at least 4GB available.
