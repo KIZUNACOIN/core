@@ -2,6 +2,7 @@
 "use strict";
 var async = require('async');
 var storage = require('./storage.js');
+var archiving = require('./archiving.js');
 var objectHash = require("./object_hash.js");
 var db = require('./db.js');
 var mutex = require('./mutex.js');
@@ -360,7 +361,16 @@ function processHistory(objResponse, callbacks){
 									"UPDATE units SET main_chain_index=?, sequence=? WHERE unit=?", 
 									[objUnit.main_chain_index, sequence, unit], 
 									function(){
-										cb2();
+										if (sequence === 'good')
+											return cb2();
+										// void the final-bad
+										breadcrumbs.add('will void '+unit);
+										db.executeInTransaction(function doWork(conn, cb3){
+											var arrQueries = [];
+											archiving.generateQueriesToArchiveJoint(conn, objJoint, 'voided', arrQueries, function(){
+												async.series(arrQueries, cb3);
+											});
+										}, cb2);
 									}
 								);
 							}
@@ -647,7 +657,7 @@ function buildPath(objLaterJoint, objEarlierJoint, arrChain, onDone){
 			throw Error("mci undefined? unit="+objJoint.unit.unit+", mci="+objJoint.unit.main_chain_index+", earlier="+objEarlierJoint.unit.unit+", later="+objLaterJoint.unit.unit);
 		db.query(
 			"SELECT unit FROM parenthoods JOIN units ON parent_unit=unit \n\
-			WHERE child_unit=? AND main_chain_index"+(objJoint.unit.main_chain_index === null ? ' IS NULL' : '='+objJoint.unit.main_chain_index), 
+			WHERE child_unit=?",// AND main_chain_index"+(objJoint.unit.main_chain_index === null ? ' IS NULL' : '='+objJoint.unit.main_chain_index), 
 			[objJoint.unit.unit],
 			function(rows){
 				if (rows.length === 0)
