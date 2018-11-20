@@ -97,7 +97,14 @@ function sendMessage(ws, type, content) {
 	if (ws.readyState !== ws.OPEN)
 		return console.log("readyState="+ws.readyState+' on peer '+ws.peer+', will not send '+message);
 	console.log("SENDING "+message+" to "+ws.peer);
-	ws.send(message);
+	if (typeof window !== 'undefined' && window && window.cordova) {
+		ws.send(message);
+	} else {
+		ws.send(message, function(err){
+			if (err)
+				ws.emit('error', 'From send: '+err);
+		});
+	}
 }
 
 function sendJustsaying(ws, subject, body){
@@ -145,6 +152,7 @@ function sendResponse(ws, tag, response){
 function sendErrorResponse(ws, tag, error) {
 	sendResponse(ws, tag, {error: error});
 }
+
 
 // if a 2nd identical request is issued before we receive a response to the 1st request, then:
 // 1. its responseHandler will be called too but no second request will be sent to the wire
@@ -206,7 +214,34 @@ function sendRequest(ws, command, params, bReroutable, responseHandler){
 		};
 		sendMessage(ws, 'request', content);
 	}
+	return tag;
 }
+
+
+function deletePendingRequest(ws, tag){
+	if (ws && ws.assocPendingRequests && ws.assocPendingRequests[tag]){
+		var pendingRequest = ws.assocPendingRequests[tag];
+		clearTimeout(pendingRequest.reroute_timer);
+		clearTimeout(pendingRequest.cancel_timer);
+		delete ws.assocPendingRequests[tag];
+
+		// if the request was rerouted, cancel all other pending requests
+		if (assocReroutedConnectionsByTag[tag]){
+			assocReroutedConnectionsByTag[tag].forEach(function(client){
+				if (client.assocPendingRequests[tag]){
+					clearTimeout(client.assocPendingRequests[tag].reroute_timer);
+					clearTimeout(client.assocPendingRequests[tag].cancel_timer);
+					delete client.assocPendingRequests[tag];
+				}
+			});
+			delete assocReroutedConnectionsByTag[tag];
+		}
+		return true;
+	}else{
+		return false;
+	}
+}
+
 
 function handleResponse(ws, tag, response){
 	var pendingRequest = ws.assocPendingRequests[tag];
@@ -218,22 +253,8 @@ function handleResponse(ws, tag, response){
 			responseHandler(ws, pendingRequest.request, response);
 		});
 	});
-	
-	clearTimeout(pendingRequest.reroute_timer);
-	clearTimeout(pendingRequest.cancel_timer);
-	delete ws.assocPendingRequests[tag];
-	
-	// if the request was rerouted, cancel all other pending requests
-	if (assocReroutedConnectionsByTag[tag]){
-		assocReroutedConnectionsByTag[tag].forEach(function(client){
-			if (client.assocPendingRequests[tag]){
-				clearTimeout(client.assocPendingRequests[tag].reroute_timer);
-				clearTimeout(client.assocPendingRequests[tag].cancel_timer);
-				delete client.assocPendingRequests[tag];
-			}
-		});
-		delete assocReroutedConnectionsByTag[tag];
-	}
+
+	deletePendingRequest(ws, tag);
 }
 
 function cancelRequestsOnClosedConnection(ws){
@@ -495,6 +516,16 @@ function getPeerWebSocket(peer){
 			return wss.clients[i];
 	return null;
 }
+
+function getInboundDeviceWebSocket(device_address){
+	for (var i=0; i<wss.clients.length; i++){
+		if (wss.clients[i].device_address === device_address)
+			return wss.clients[i];
+	}
+	return null;
+}
+
+
 
 function findOutboundPeerOrConnect(url, onOpen){
 	if (!url)
@@ -840,7 +871,7 @@ function havePendingJointRequest(unit){
 
 // We may receive a reference to a nonexisting unit in parents. We are not going to keep the referencing joint forever.
 function purgeJunkUnhandledJoints(){
-	if (bCatchingUp || Date.now() - coming_online_time < 3600*1000)
+	if (bCatchingUp || Date.now() - coming_online_time < 3600*1000 || wss.clients.length === 0 && arrOutboundPeers.length === 0)
 		return;
 	db.query("DELETE FROM unhandled_joints WHERE creation_date < "+db.addTime("-1 HOUR"), function(){
 		db.query("DELETE FROM dependencies WHERE NOT EXISTS (SELECT * FROM unhandled_joints WHERE unhandled_joints.unit=dependencies.unit)");
@@ -894,67 +925,78 @@ function handleJoint(ws, objJoint, bSaved, callbacks){
 	assocUnitsInWork[unit] = true;
 	
 	var validate = function(){
-		validation.validate(objJoint, {
-			ifUnitError: function(error){
-				console.log(objJoint.unit.unit+" validation failed: "+error);
-				callbacks.ifUnitError(error);
-			//	throw Error(error);
-				purgeJointAndDependenciesAndNotifyPeers(objJoint, error, function(){
-					delete assocUnitsInWork[unit];
-				});
-				if (ws && error !== 'authentifier verification failed' && !error.match(/bad merkle proof at path/))
-					writeEvent('invalid', ws.host);
-				if (objJoint.unsigned)
-					eventBus.emit("validated-"+unit, false);
-			},
-			ifJointError: function(error){
-				callbacks.ifJointError(error);
-			//	throw Error(error);
-				db.query(
-					"INSERT INTO known_bad_joints (joint, json, error) VALUES (?,?,?)", 
-					[objectHash.getJointHash(objJoint), JSON.stringify(objJoint), error],
-					function(){
+		mutex.lock(['handleJoint'], function(unlock){
+			validation.validate(objJoint, {
+				ifUnitError: function(error){
+					console.log(objJoint.unit.unit+" validation failed: "+error);
+					callbacks.ifUnitError(error);
+				//	throw Error(error);
+					unlock();
+					purgeJointAndDependenciesAndNotifyPeers(objJoint, error, function(){
 						delete assocUnitsInWork[unit];
-					}
-				);
-				if (ws)
-					writeEvent('invalid', ws.host);
-				if (objJoint.unsigned)
-					eventBus.emit("validated-"+unit, false);
-			},
-			ifTransientError: function(error){
-				throw Error(error);
-				console.log("############################## transient error "+error);
-				delete assocUnitsInWork[unit];
-			},
-			ifNeedHashTree: function(){
-				console.log('need hash tree for unit '+unit);
-				if (objJoint.unsigned)
-					throw Error("ifNeedHashTree() unsigned");
-				callbacks.ifNeedHashTree();
-				// we are not saving unhandled joint because we don't know dependencies
-				delete assocUnitsInWork[unit];
-			},
-			ifNeedParentUnits: callbacks.ifNeedParentUnits,
-			ifOk: function(objValidationState, validation_unlock){
-				if (objJoint.unsigned)
-					throw Error("ifOk() unsigned");
-				writer.saveJoint(objJoint, objValidationState, null, function(){
-					validation_unlock();
-					callbacks.ifOk();
+					});
+					if (ws && error !== 'authentifier verification failed' && !error.match(/bad merkle proof at path/))
+						writeEvent('invalid', ws.host);
+					if (objJoint.unsigned)
+						eventBus.emit("validated-"+unit, false);
+				},
+				ifJointError: function(error){
+					callbacks.ifJointError(error);
+				//	throw Error(error);
+					unlock();
+					db.query(
+						"INSERT INTO known_bad_joints (joint, json, error) VALUES (?,?,?)", 
+						[objectHash.getJointHash(objJoint), JSON.stringify(objJoint), error],
+						function(){
+							delete assocUnitsInWork[unit];
+						}
+					);
 					if (ws)
-						writeEvent((objValidationState.sequence !== 'good') ? 'nonserial' : 'new_good', ws.host);
-					notifyWatchers(objJoint, ws);
-					if (!bCatchingUp)
-						eventBus.emit('new_joint', objJoint);
-				});
-			},
-			ifOkUnsigned: function(bSerial){
-				if (!objJoint.unsigned)
-					throw Error("ifOkUnsigned() signed");
-				callbacks.ifOkUnsigned();
-				eventBus.emit("validated-"+unit, bSerial);
-			}
+						writeEvent('invalid', ws.host);
+					if (objJoint.unsigned)
+						eventBus.emit("validated-"+unit, false);
+				},
+				ifTransientError: function(error){
+					throw Error(error);
+					unlock();
+					console.log("############################## transient error "+error);
+					delete assocUnitsInWork[unit];
+				},
+				ifNeedHashTree: function(){
+					console.log('need hash tree for unit '+unit);
+					if (objJoint.unsigned)
+						throw Error("ifNeedHashTree() unsigned");
+					callbacks.ifNeedHashTree();
+					// we are not saving unhandled joint because we don't know dependencies
+					delete assocUnitsInWork[unit];
+					unlock();
+				},
+				ifNeedParentUnits: function(arrMissingUnits){
+					callbacks.ifNeedParentUnits(arrMissingUnits);
+					unlock();
+				},
+				ifOk: function(objValidationState, validation_unlock){
+					if (objJoint.unsigned)
+						throw Error("ifOk() unsigned");
+					writer.saveJoint(objJoint, objValidationState, null, function(){
+						validation_unlock();
+						callbacks.ifOk();
+						unlock();
+						if (ws)
+							writeEvent((objValidationState.sequence !== 'good') ? 'nonserial' : 'new_good', ws.host);
+						notifyWatchers(objJoint, ws);
+						if (!bCatchingUp)
+							eventBus.emit('new_joint', objJoint);
+					});
+				},
+				ifOkUnsigned: function(bSerial){
+					if (!objJoint.unsigned)
+						throw Error("ifOkUnsigned() signed");
+					callbacks.ifOkUnsigned();
+					unlock();
+					eventBus.emit("validated-"+unit, bSerial);
+				}
+			});
 		});
 	};
 
@@ -1110,7 +1152,11 @@ function handleSavedJoint(objJoint, creation_ts, peer){
 		ws = null;
 
 	handleJoint(ws, objJoint, true, {
-		ifUnitInWork: function(){},
+		ifUnitInWork: function(){
+			setTimeout(function(){
+				handleSavedJoint(objJoint, creation_ts, peer);
+			}, 1000);
+		},
 		ifUnitError: function(error){
 			if (ws)
 				sendErrorResult(ws, unit, error);
@@ -1438,12 +1484,11 @@ function waitTillIdle(onIdle){
 }
 
 function broadcastJoint(objJoint){
-	if (conf.bLight) // the joint was already posted to light vendor before saving
-		return;
-	wss.clients.concat(arrOutboundPeers).forEach(function(client) {
-		if (client.bSubscribed)
-			sendJoint(client, objJoint);
-	});
+	if (!conf.bLight) // the joint was already posted to light vendor before saving
+		wss.clients.concat(arrOutboundPeers).forEach(function(client) {
+			if (client.bSubscribed)
+				sendJoint(client, objJoint);
+		});
 	notifyWatchers(objJoint);
 }
 
@@ -1589,8 +1634,8 @@ function handleHashTree(ws, request, response){
 
 function waitTillHashTreeFullyProcessedAndRequestNext(ws){
 	setTimeout(function(){
-		db.query("SELECT 1 FROM hash_tree_balls LEFT JOIN units USING(unit) WHERE units.unit IS NULL LIMIT 1", function(rows){
-			if (rows.length === 0){
+		db.query("SELECT COUNT(*) AS count FROM hash_tree_balls LEFT JOIN units USING(unit) WHERE units.unit IS NULL", function(rows){
+			if (rows[0].count <= 30){
 				findNextPeer(ws, function(next_ws){
 					requestNextHashTree(next_ws);
 				});
@@ -1944,13 +1989,26 @@ function initWitnessesIfNecessary(ws, onDone){
 
 // hub
 
-function sendStoredDeviceMessages(ws, device_address){
-	db.query("SELECT message_hash, message FROM device_messages WHERE device_address=? ORDER BY creation_date LIMIT 100", [device_address], function(rows){
-		rows.forEach(function(row){
-			sendJustsaying(ws, 'hub/message', {message_hash: row.message_hash, message: JSON.parse(row.message)});
+function deleteOverlengthMessagesIfLimitIsSet(ws, device_address, handle){
+	if (ws.max_message_length)
+		db.query("DELETE FROM device_messages WHERE device_address=? AND LENGTH(message)>?", [device_address, ws.max_message_length], function(){
+			return handle();
 		});
-		sendInfo(ws, rows.length+" messages sent");
-		sendJustsaying(ws, 'hub/message_box_status', (rows.length === 100) ? 'has_more' : 'empty');
+	else
+		return handle();
+}
+
+
+function sendStoredDeviceMessages(ws, device_address){
+	deleteOverlengthMessagesIfLimitIsSet(ws, device_address, function(){
+		var max_message_count = ws.max_message_count ? ws.max_message_count : 100;
+		db.query("SELECT message_hash, message FROM device_messages WHERE device_address=? ORDER BY creation_date LIMIT ?", [device_address, max_message_count], function(rows){
+			rows.forEach(function(row){
+				sendJustsaying(ws, 'hub/message', {message_hash: row.message_hash, message: JSON.parse(row.message)});
+			});
+			sendInfo(ws, rows.length+" messages sent");
+			sendJustsaying(ws, 'hub/message_box_status', (rows.length === max_message_count) ? 'has_more' : 'empty');
+		});
 	});
 }
 
@@ -2063,7 +2121,7 @@ function handleJustsaying(ws, subject, body){
 			break;
 			
 		case 'my_url':
-			if (!body)
+			if (!ValidationUtils.isNonemptyString(body))
 				return;
 			var url = body;
 			if (ws.bOutbound) // ignore: if you are outbound, I already know your url
@@ -2138,13 +2196,19 @@ function handleJustsaying(ws, subject, body){
 				return sendError(ws, "wrong challenge");
 			if (!objLogin.pubkey || !objLogin.signature)
 				return sendError(ws, "no login params");
-			if (objLogin.pubkey.length !== constants.PUBKEY_LENGTH)
+			if (!ValidationUtils.isStringOfLength(objLogin.pubkey, constants.PUBKEY_LENGTH))
 				return sendError(ws, "wrong pubkey length");
-			if (objLogin.signature.length !== constants.SIG_LENGTH)
+			if (!ValidationUtils.isStringOfLength(objLogin.signature, constants.SIG_LENGTH))
 				return sendError(ws, "wrong signature length");
+			if (objLogin.max_message_length && !ValidationUtils.isPositiveInteger(objLogin.max_message_length))
+				return sendError(ws, "max_message_length must be an integer");
+			if (objLogin.max_message_count && (!ValidationUtils.isPositiveInteger(objLogin.max_message_count) || objLogin.max_message_count > 100))
+				return sendError(ws, "max_message_count must be an integer > 0 and <= 100");
 			if (!ecdsaSig.verify(objectHash.getDeviceMessageHashToSign(objLogin), objLogin.signature, objLogin.pubkey))
 				return sendError(ws, "wrong signature");
 			ws.device_address = objectHash.getDeviceAddress(objLogin.pubkey);
+			ws.max_message_length = objLogin.max_message_length;
+			ws.max_message_count = objLogin.max_message_count;
 			// after this point the device is authenticated and can send further commands
 			var finishLogin = function(){
 				ws.bLoginComplete = true;
@@ -2159,15 +2223,12 @@ function handleJustsaying(ws, subject, body){
 						sendInfo(ws, "address created");
 						finishLogin();
 					});
-				else{
+				else {
 					sendStoredDeviceMessages(ws, ws.device_address);
 					finishLogin();
 				}
 			});
-			if (conf.pushApiProjectNumber && conf.pushApiKey)
-				sendJustsaying(ws, 'hub/push_project_number', {projectNumber: conf.pushApiProjectNumber});
-			else
-				sendJustsaying(ws, 'hub/push_project_number', {projectNumber: 0});
+			sendJustsaying(ws, 'hub/push_project_number', {projectNumber: (conf.pushApiProjectNumber && conf.pushApiKey ? conf.pushApiProjectNumber : 0), hasKeyId: !!conf.keyId});
 			eventBus.emit('client_logged_in', ws);
 			break;
 			
@@ -2264,6 +2325,10 @@ function handleJustsaying(ws, subject, body){
 				return;
 			ws.close(1000, "my core is old");
 			throw Error("Mandatory upgrade required, please check the release notes at https://github.com/byteball/byteball/releases and upgrade.");
+			break;
+			
+		case 'custom':
+			eventBus.emit('custom_justsaying', ws, body);
 			break;
 	}
 }
@@ -2430,13 +2495,14 @@ function handleRequest(ws, tag, command, params){
 				if (rows.length === 0)
 					return sendErrorResponse(ws, tag, "address "+objDeviceMessage.to+" not registered here");
 				var message_hash = objectHash.getBase64Hash(objDeviceMessage);
+				var message_string = JSON.stringify(objDeviceMessage);
 				db.query(
 					"INSERT "+db.getIgnore()+" INTO device_messages (message_hash, message, device_address) VALUES (?,?,?)", 
-					[message_hash, JSON.stringify(objDeviceMessage), objDeviceMessage.to],
+					[message_hash, message_string, objDeviceMessage.to],
 					function(){
 						// if the addressee is connected, deliver immediately
-						wss.clients.forEach(function(client){
-							if (client.device_address === objDeviceMessage.to) {
+						wss.clients.concat(arrOutboundPeers).forEach(function(client){
+							if (client.device_address === objDeviceMessage.to && (!client.max_message_length || message_string.length <= client.max_message_length)) {
 								sendJustsaying(client, 'hub/message', {
 									message_hash: message_hash,
 									message: objDeviceMessage
@@ -2453,9 +2519,7 @@ function handleRequest(ws, tag, command, params){
 		// I'm a hub, the peer wants to get a correspondent's temporary pubkey
 		case 'hub/get_temp_pubkey':
 			var permanent_pubkey = params;
-			if (!permanent_pubkey)
-				return sendErrorResponse(ws, tag, "no permanent_pubkey");
-			if (permanent_pubkey.length !== constants.PUBKEY_LENGTH)
+			if (!ValidationUtils.isStringOfLength(permanent_pubkey, constants.PUBKEY_LENGTH))
 				return sendErrorResponse(ws, tag, "wrong permanent_pubkey length");
 			var device_address = objectHash.getDeviceAddress(permanent_pubkey);
 			if (device_address === my_device_address) // to me
@@ -2481,7 +2545,7 @@ function handleRequest(ws, tag, command, params){
 			var objTempPubkey = params;
 			if (!objTempPubkey || !objTempPubkey.temp_pubkey || !objTempPubkey.pubkey || !objTempPubkey.signature)
 				return sendErrorResponse(ws, tag, "no temp_pubkey params");
-			if (objTempPubkey.temp_pubkey.length !== constants.PUBKEY_LENGTH)
+			if (!ValidationUtils.isStringOfLength(objTempPubkey.temp_pubkey, constants.PUBKEY_LENGTH))
 				return sendErrorResponse(ws, tag, "wrong temp_pubkey length");
 			if (objectHash.getDeviceAddress(objTempPubkey.pubkey) !== ws.device_address)
 				return sendErrorResponse(ws, tag, "signed by another pubkey");
@@ -2669,6 +2733,79 @@ function handleRequest(ws, tag, command, params){
 			});
 			break;
 
+		case 'light/get_definition':
+			if (conf.bLight)
+				return sendErrorResponse(ws, tag, "I'm light myself, can't serve you");
+			if (ws.bOutbound)
+				return sendErrorResponse(ws, tag, "light clients have to be inbound");
+			if (!params)
+				return sendErrorResponse(ws, tag, "no params in light/get_definition");
+			if (!ValidationUtils.isValidAddress(params))
+				return sendErrorResponse(ws, tag, "address not valid");
+			db.query("SELECT definition FROM definitions WHERE definition_chash=?", [params], function(rows){
+				if (!rows[0])
+					return sendResponse(ws, tag, null);
+				var arrDefinition = JSON.parse(rows[0].definition);
+				sendResponse(ws, tag, arrDefinition);
+			});
+			break;
+
+    	case 'light/get_balances':
+			var addresses = params;
+			if (conf.bLight)
+				return sendErrorResponse(ws, tag, "I'm light myself, can't serve you");
+			if (ws.bOutbound)
+				return sendErrorResponse(ws, tag, "light clients have to be inbound");
+			if (!addresses)
+				return sendErrorResponse(ws, tag, "no params in light/get_balances");
+			if (!ValidationUtils.isNonemptyArray(addresses))
+				return sendErrorResponse(ws, tag, "addresses must be non-empty array");
+			if (!addresses.every(ValidationUtils.isValidAddress))
+				return sendErrorResponse(ws, tag, "some addresses are not valid");
+			if (addresses.length > 100)
+				return sendErrorResponse(ws, tag, "too many addresses");
+			db.query(
+				"SELECT address, asset, is_stable, SUM(amount) AS balance \n\
+				FROM outputs JOIN units USING(unit) \n\
+				WHERE is_spent=0 AND address IN(?) AND sequence='good' \n\
+				GROUP BY address, asset, is_stable", [addresses], function(rows) {
+					var balances = {};
+					rows.forEach(function(row) {
+						if (!balances[row.address])
+							balances[row.address] = { base: { stable: 0, pending: 0 }};
+						if (row.asset && !balances[row.address][row.asset])
+							balances[row.address][row.asset] = { stable: 0, pending: 0 };
+						balances[row.address][row.asset || 'base'][row.is_stable ? 'stable' : 'pending'] = row.balance;
+					});
+					sendResponse(ws, tag, balances);
+				}
+			);
+			break;
+      
+    	case 'light/get_profile_units':
+			var addresses = params;
+			if (conf.bLight)
+				return sendErrorResponse(ws, tag, "I'm light myself, can't serve you");
+			if (ws.bOutbound)
+				return sendErrorResponse(ws, tag, "light clients have to be inbound");
+			if (!addresses)
+				return sendErrorResponse(ws, tag, "no params in light/get_profiles_units");
+			if (!ValidationUtils.isNonemptyArray(addresses))
+				return sendErrorResponse(ws, tag, "addresses must be non-empty array");
+			if (!addresses.every(ValidationUtils.isValidAddress))
+				return sendErrorResponse(ws, tag, "some addresses are not valid");
+			if (addresses.length > 100)
+				return sendErrorResponse(ws, tag, "too many addresses");
+			db.query(
+				"SELECT unit FROM messages JOIN unit_authors USING(unit) \n\
+				JOIN units USING(unit) WHERE app='profile' AND address IN(?) \n\
+				ORDER BY main_chain_index ASC", [addresses], function(rows) {
+					var units = rows.map(function(row) { return row.unit; });
+					sendResponse(ws, tag, units);
+				}
+			);
+			break;
+
 		// I'm a hub, the peer wants to enable push notifications
 		case 'hub/enable_notification':
 			if(ws.device_address)
@@ -2699,6 +2836,10 @@ function handleRequest(ws, tag, command, params){
 				sendResponse(ws, tag, rows[0]);
 			});
 			break;
+			
+		case 'custom':
+			eventBus.emit('custom_request', ws, params,tag);
+		break;
 	}
 }
 
@@ -2707,7 +2848,7 @@ function onWebsocketMessage(message) {
 	var ws = this;
 	
 	if (ws.readyState !== ws.OPEN)
-		return;
+		return console.log("received a message on socket with ready state "+ws.readyState);
 	
 	console.log('RECEIVED '+(message.length > 1000 ? message.substr(0,1000)+'... ('+message.length+' chars)' : message)+' from '+ws.peer);
 	ws.last_ts = Date.now();
@@ -2720,6 +2861,8 @@ function onWebsocketMessage(message) {
 	}
 	var message_type = arrMessage[0];
 	var content = arrMessage[1];
+	if (!content || typeof content !== 'object')
+		return console.log("content is not object: "+content);
 	
 	switch (message_type){
 		case 'justsaying':
@@ -2840,7 +2983,8 @@ function startRelay(){
 	
 	setInterval(purgeJunkUnhandledJoints, 30*60*1000);
 	setInterval(joint_storage.purgeUncoveredNonserialJointsUnderLock, 60*1000);
-	setInterval(findAndHandleJointsThatAreReady, 5*1000);
+	setInterval(handleSavedPrivatePayments, 5*1000);
+	joint_storage.readDependentJointsThatAreReady(null, handleSavedJoint);
 }
 
 function startLightClient(){
@@ -2884,6 +3028,7 @@ exports.sendJustsaying = sendJustsaying;
 exports.sendAllInboundJustsaying = sendAllInboundJustsaying;
 exports.sendError = sendError;
 exports.sendRequest = sendRequest;
+exports.sendResponse = sendResponse;
 exports.findOutboundPeerOrConnect = findOutboundPeerOrConnect;
 exports.handleOnlineJoint = handleOnlineJoint;
 
@@ -2908,3 +3053,5 @@ exports.isConnected = isConnected;
 exports.isCatchingUp = isCatchingUp;
 exports.requestHistoryFor = requestHistoryFor;
 exports.exchangeRates = exchangeRates;
+exports.getInboundDeviceWebSocket = getInboundDeviceWebSocket;
+exports.deletePendingRequest = deletePendingRequest;
