@@ -351,10 +351,7 @@ function handleMessageFromHub(ws, json, device_pubkey, bIndirectCorrespondent, c
             }
             else
                 return callbacks.ifError("neither messages nor signed_message");
-            // findAddress handles both types of addresses
-            findAddress(body.address, body.signing_path, {
-                ifError: callbacks.ifError,
-			}
+            
 			// findAddress handles both types of addresses
 			findAddress(body.address, body.signing_path, {
 				ifError: callbacks.ifError,
