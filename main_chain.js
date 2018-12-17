@@ -420,46 +420,46 @@ function updateMainChain(conn, from_unit, last_added_unit, onDone){
 		});
 	}
 
-    function findMinMcWitnessedLevel(tip_unit, first_unstable_mc_level, first_unstable_mc_index, arrWitnesses, handleMinMcWl){
-        var _arrWitnesses = arrWitnesses;
-        var arrCollectedWitnesses = [];
-        var min_mc_wl = Number.POSITIVE_INFINITY;
+	function findMinMcWitnessedLevel(tip_unit, first_unstable_mc_level, first_unstable_mc_index, arrWitnesses, handleMinMcWl){
+		var _arrWitnesses = arrWitnesses;
+		var arrCollectedWitnesses = [];
+		var min_mc_wl = Number.POSITIVE_INFINITY;
 
-        function addWitnessesAndGoUp(start_unit){
-            storage.readStaticUnitProps(conn, start_unit, function(props){
-                var best_parent_unit = props.best_parent_unit;
-                var level = props.level;
-                if (level === null)
-                	throw Error("null level in findminMcWitenessedLevel");
-                if ( level< first_unstable_mc_level){
-					console.log("unit " + start_unit + ", level=" + level +", first_unstable_mc_level=" + first_unstable_mc_level + ",min_mc_wl=" + min_mc_wl);
+		function addWitnessesAndGoUp(start_unit){
+			storage.readStaticUnitProps(conn, start_unit, function(props){
+				var best_parent_unit = props.best_parent_unit;
+				var level = props.level;
+				if (level === null)
+					throw Error("null level in findMinMcWitnessedLevel");
+				if (level < first_unstable_mc_level) {
+					console.log("unit " + start_unit + ", level=" + level + ", first_unstable_mc_level=" + first_unstable_mc_level + ", min_mc_wl=" + min_mc_wl);
 					return handleMinMcWl(-1);
 				}
-                storage.readUnitAuthors(conn, start_unit, function(arrAuthors){
-                	for (var i=0; i<arrAuthors.length; i++){
-                		var address = arrAuthors[i];
-                        if (_arrWitnesses.indexOf(address) !== -1 && arrCollectedWitnesses.indexOf(address) === -1) {
-                			arrCollectedWitnesses.push(address);
-                			var witnessed_level = props.witnessed_level;
-                			if (min_mc_wl > witnessed_level)
-                				min_mc_wl = witnessed_level;
+				storage.readUnitAuthors(conn, start_unit, function(arrAuthors){
+					for (var i=0; i<arrAuthors.length; i++){
+						var address = arrAuthors[i];
+						if (_arrWitnesses.indexOf(address) !== -1 && arrCollectedWitnesses.indexOf(address) === -1) {
+							arrCollectedWitnesses.push(address);
+							var witnessed_level = props.witnessed_level;
+							if (min_mc_wl > witnessed_level)
+								min_mc_wl = witnessed_level;
 						}
 					}
-					(arrCollectedWitnesses.length < constants.MAJORITY_OF_WITNESSES)
-					? addWitnessesAndGoUp(best_parent_unit) : handleMinMcWl(min_mc_wl);
+					(arrCollectedWitnesses.length < constants.MAJORITY_OF_WITNESSES) 
+						? addWitnessesAndGoUp(best_parent_unit) : handleMinMcWl(min_mc_wl);
 				});
 			});
 		}
 
-        if (first_unstable_mc_index > constants.lastBallStableInParentsUpgradeMci)
-            return addWitnessesAndGoUp(tip_unit);
-        // use old algo for old units
-        storage.readWitnesses(conn, tip_unit, function(arrTipUnitWitnesses){
-            _arrWitnesses = arrTipUnitWitnesses;
-            addWitnessesAndGoUp(tip_unit);
-        });
-    }
-
+		if (first_unstable_mc_index > constants.lastBallStableInParentsUpgradeMci)
+			return addWitnessesAndGoUp(tip_unit);
+		// use old algo for old units
+		storage.readWitnesses(conn, tip_unit, function(arrTipUnitWitnesses){
+			_arrWitnesses = arrTipUnitWitnesses;
+			addWitnessesAndGoUp(tip_unit);
+		});
+	}
+	
 	function updateStableMcFlag(){
 		console.log("updateStableMcFlag");
 		profiler.start();
@@ -485,17 +485,17 @@ function updateMainChain(conn, from_unit, last_added_unit, onDone){
 						profiler.stop('mc-stableFlag');
 						markMcIndexStable(conn, first_unstable_mc_index, updateStableMcFlag);
 					}
-
-                    conn.query("SELECT unit FROM units WHERE is_free=1 AND is_on_main_chain=1", function(tip_rows){
+				
+					conn.query("SELECT unit FROM units WHERE is_free=1 AND is_on_main_chain=1", function(tip_rows){
 						if (tip_rows.length !== 1)
 							throw Error("not a single mc tip");
 						// this is the level when we colect 7 witnesses if walking up the MC from its end
-                        var tip_unit = tip_rows[0].unit;
-                        findMinMcWitnessedLevel(tip_unit, first_unstable_mc_level, first_unstable_mc_index, arrWitnesses,
-                            function(min_mc_wl){
-                                console.log("minimum witnessed level "+min_mc_wl);
-                                if (min_mc_wl == -1)
-                                    return finish();
+						var tip_unit = tip_rows[0].unit;
+						findMinMcWitnessedLevel(tip_unit, first_unstable_mc_level, first_unstable_mc_index, arrWitnesses,
+							function(min_mc_wl){
+								console.log("minimum witnessed level "+min_mc_wl);
+								if (min_mc_wl == -1)
+									return finish();
 
 								if (arrAltBranchRootUnits.length === 0){ // no alt branches
 									if (min_mc_wl >= first_unstable_mc_level) 
@@ -699,8 +699,8 @@ function determineIfStableInLaterUnits(conn, earlier_unit, arrLaterUnits, handle
 	// hack to workaround past validation error
 	if (earlier_unit === 'LGFzduLJNQNzEqJqUXdkXr58wDYx77V8WurDF3+GIws=' && arrLaterUnits.join(',') === '6O4t3j8kW0/Lo7n2nuS8ITDv2UbOhlL9fF1M6j/PrJ4=')
 		return handleResult(true);
-    if (earlier_unit === 'VLdMzBDVpwqu+3OcZrBrmkT0aUb/mZ0O1IveDmGqIP0=' && arrLaterUnits.join(',') === 'pAfErVAA5CSPeh1KoLidDTgdt5Blu7k2rINtxVTMq4k=')
-        return handleResult(true);
+	if (earlier_unit === 'VLdMzBDVpwqu+3OcZrBrmkT0aUb/mZ0O1IveDmGqIP0=' && arrLaterUnits.join(',') === 'pAfErVAA5CSPeh1KoLidDTgdt5Blu7k2rINtxVTMq4k=')
+		return handleResult(true);
 	var start_time = Date.now();
 	storage.readPropsOfUnits(conn, earlier_unit, arrLaterUnits, function(objEarlierUnitProps, arrLaterUnitProps){
 		if (objEarlierUnitProps.is_free === 1)
@@ -763,7 +763,7 @@ function determineIfStableInLaterUnits(conn, earlier_unit, arrLaterUnits, handle
 									console.log("---------- new min_mc_wl="+min_mc_wl+", old min_mc_wl="+old_min_mc_wl+", diff="+diff+", later "+arrLaterUnits.join(', '));
 								//	if (diff < 0)
 								//		throw Error("new min_mc_wl="+min_mc_wl+", old min_mc_wl="+old_min_mc_wl+", diff="+diff+" for earlier "+earlier_unit+", later "+arrLaterUnits.join(', '));
-                                    handleMinMcWl(Math.max(old_min_mc_wl, min_mc_wl));
+									handleMinMcWl(Math.max(old_min_mc_wl, min_mc_wl));
 								});
 							}
 						);
@@ -999,8 +999,8 @@ function determineIfStableInLaterUnits(conn, earlier_unit, arrLaterUnits, handle
 											console.log("collectBestChildren took "+(Date.now()-start_time)+"ms");
 											arrBestChildren.sort();
 											if (!_.isEqual(arrBestChildren, arrBestChildren1)){
-                                                throwError("different best children, old "+arrBestChildren1.join(', ')+'; new '+arrBestChildren.join(', ')+', later '+arrLaterUnits.join(', ')+', earlier '+earlier_unit+", global db? = "+(conn === db));
-                                                arrBestChildren = arrBestChildren1;
+												throwError("different best children, old "+arrBestChildren1.join(', ')+'; new '+arrBestChildren.join(', ')+', later '+arrLaterUnits.join(', ')+', earlier '+earlier_unit+", global db? = "+(conn === db));
+												arrBestChildren = arrBestChildren1;
 											}
 											cb();
 										});

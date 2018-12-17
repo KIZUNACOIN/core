@@ -271,7 +271,7 @@ function readHashTree(hashTreeRequest, callbacks){
 							);
 						},
 						function(){
-                            console.log("readHashTree for "+JSON.stringify(hashTreeRequest)+" took "+(Date.now()-start_ts)+'ms');
+							console.log("readHashTree for "+JSON.stringify(hashTreeRequest)+" took "+(Date.now()-start_ts)+'ms');
 							callbacks.ifOk(arrBalls);
 						}
 					);
