@@ -1700,17 +1700,17 @@ function sendTextcoinEmail(email, subject, amount, asset, mnemonic){
 	var usd_amount_str = '';
 	if (!asset){
 		amount -= constants.TEXTCOIN_CLAIM_FEE;
-		if (network.exchangeRates['GBYTE_USD']) {
-			usd_amount_str = " (≈" + ((amount/1e9)*network.exchangeRates['GBYTE_USD']).toLocaleString([], {maximumFractionDigits: 2}) + " USD)";
+		if (network.exchangeRates['KIZ_USD']) {
+			usd_amount_str = " (≈" + ((amount/1e6)*network.exchangeRates['KIZ_USD']).toLocaleString([], {maximumFractionDigits: 2}) + " USD)";
 		}
-		amount = (amount/1e9).toLocaleString([], {maximumFractionDigits: 9});
-		asset = 'GB';
+		amount = (amount/1e6).toLocaleString([], {maximumFractionDigits: 6});
+		asset = 'KIZ';
 	}
 	replaceInTextcoinTemplate({amount: amount, asset: asset, mnemonic: mnemonic, usd_amount_str: usd_amount_str}, function(html, text){
 		mail.sendmail({
 			to: email,
-			from: conf.from_email || "noreply@byteball.org",
-			subject: subject || "Byteball user beamed you money",
+			from: conf.from_email || "support@kizunacoin.net",
+			subject: subject || "Kizunacoin user beamed you money",
 			body: text,
 			htmlBody: html
 		});
@@ -1728,7 +1728,7 @@ function replaceInTextcoinTemplate(params, handleText){
 		});
 		template = template.replace(/\{\{\w*\}\}/g, '');
 
-		var text = "Here is your link to receive " + params.amount + " " + params.asset + params.usd_amount_str + ": https://byteball.org/#textcoin?" + params.mnemonic;
+		var text = "Here is your link to receive " + params.amount + " " + params.asset + params.usd_amount_str + ": https://kizunacoin.jp/#textcoin?" + params.mnemonic;
 		handleText(template, text);
 	});
 }
