@@ -49,7 +49,7 @@ exports.minCoreVersion = exports.bTestnet ? '0.2.89' : '0.2.92';
 
 exports.lastBallStableInParentsUpgradeMci = 100000;
 exports.witnessedLevelMustNotRetreatUpgradeMci = exports.bTestnet ? 684000 : 50000;
-exports.spendUnconfirmedUpgradeMci = exports.bTestnet ? 589000 : 100000;
+exports.spendUnconfirmedUpgradeMci = exports.bTestnet ? 589000 : 1000;
 exports.branchedMinMcWlUpgradeMci = exports.bTestnet ? 593000 : 100000;
 exports.otherAddressInDefinitionUpgradeMci = exports.bTestnet ? 602000 : 100000;
 exports.attestedInDefinitionUpgradeMci = exports.bTestnet ? 616000 : 100000;
