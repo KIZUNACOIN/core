@@ -817,6 +817,8 @@ exports.readAddressByIndex = readAddressByIndex;
 exports.issueOrSelectNextAddress = issueOrSelectNextAddress;
 exports.issueOrSelectNextChangeAddress = issueOrSelectNextChangeAddress;
 exports.readAddresses = readAddresses;
+exports.readAllAddresses = readAllAddresses;
+
 exports.readExternalAddresses = readExternalAddresses;
 exports.readChangeAddresses = readChangeAddresses;
 exports.readAddressInfo = readAddressInfo;
